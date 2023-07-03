@@ -1,0 +1,438 @@
+version: '3.4'
+
+services:
+  elastic_setup:
+    build:
+      context: ./
+      target: elastic_setup
+    image: elasticsearch:${STACK_VERSION}
+    container_name: elastic_setup
+    user: "0"
+    volumes:
+      - ./certs:/usr/share/elasticsearch/config/certs
+    environment:
+      - ELASTIC_PASSWORD=${ELASTIC01_PASSWORD}
+      - KIBANA_PASSWORD=${KIBANA_PASSWORD}
+    command: /bin/bash /elastic_entrypoint.sh
+    networks:
+      network:
+        ipv4_address: 172.18.0.3
+    healthcheck:
+      test: 
+        [
+          "CMD-SHELL", 
+          "[ -f config/certs/elastic01/elastic01.crt ]"
+        ]
+      interval: 1s
+      timeout: 5s
+      retries: 120
+
+  nginx:
+    image: nginx:latest
+    container_name: nginx
+    restart: always
+    ports:
+      - 80:80
+      - 443:443
+    volumes:
+      - ./nginx/templates:/etc/nginx/templates
+      - ./nginx/nginx-entrypoint.sh:/etc/nginx/nginx-entrypoint.sh
+      - ./nginx/logs:/var/log/nginx
+      - ./nginx/certs:/etc/nginx/ssl
+    environment:
+      - KIBANA_URL=${KIBANA_URL}
+      - THEHIVE_URL=${THEHIVE_URL}
+      - CORTEX_URL=${CORTEX_URL}
+      - MISP_URL=${MISP_URL}
+      - SHUFFLE_URL=${SHUFFLE_URL}
+      - KUMA_URL=${KUMA_URL}
+    command: "/bin/bash /etc/nginx/nginx-entrypoint.sh"
+    networks:
+      network:
+        ipv4_address: 172.18.0.5
+    depends_on:
+      kibana:
+        condition: service_healthy
+
+  elastic01:
+    image: elasticsearch:${STACK_VERSION}
+    container_name: elastic01
+    hostname: elastic01
+    restart: always
+    volumes:
+      - ./certs:/usr/share/elasticsearch/config/certs
+      - ./elastic01_data:/usr/share/elasticsearch/data
+    ports:
+      - ${ES_PORT}:9200
+    environment:
+      - ELASTIC_PASSWORD=${ELASTIC01_PASSWORD}
+      - bootstrap.memory_lock=true
+      - script.allowed_types=inline
+      - cluster.initial_master_nodes=elastic01
+      - xpack.security.enabled=true
+      - xpack.security.enrollment.enabled=true
+      - xpack.security.http.ssl.enabled=true
+      - xpack.security.http.ssl.key=certs/elastic01/elastic01.key
+      - xpack.security.http.ssl.certificate=certs/elastic01/elastic01.crt
+      - xpack.security.http.ssl.certificate_authorities=certs/ca/ca.crt
+      - xpack.security.transport.ssl.enabled=true
+      - xpack.security.transport.ssl.key=certs/elastic01/elastic01.key
+      - xpack.security.transport.ssl.certificate=certs/elastic01/elastic01.crt
+      - xpack.security.transport.ssl.certificate_authorities=certs/ca/ca.crt
+      - xpack.security.transport.ssl.verification_mode=certificate
+      - xpack.license.self_generated.type=${LICENSE}
+      - thread_pool.search.queue_size=100000
+      - thread_pool.write.queue_size=10000
+      - "ES_JAVA_OPTS=-Xms256m -Xmx256m"
+    #mem_limit: 4073741824
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    networks:
+      network:
+        ipv4_address: 172.18.0.2
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -s --cacert config/certs/ca/ca.crt https://localhost:9200 | grep -q 'missing authentication credentials'",
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 120
+    depends_on:
+      elastic_setup:
+        condition: service_healthy
+
+  elastic02:
+    image: elasticsearch:7.17.2
+    container_name: elastic02
+    hostname: elastic02
+    restart: always
+    volumes:
+      - ./elastic02_data:/usr/share/elasticsearch/data
+    environment:
+      - ELASTIC_PASSWORD=${ELASTIC02_PASSWORD}
+      - bootstrap.memory_lock=true
+      - script.allowed_types="inline,stored"
+      - cluster.initial_master_nodes=elastic02
+      - xpack.security.enabled=false
+      - thread_pool.search.queue_size=100000
+      - thread_pool.write.queue_size=10000
+      - "ES_JAVA_OPTS=-Xms256m -Xmx256m"
+    #mem_limit: 4073741824
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    networks:
+      network:
+        ipv4_address: 172.18.0.17
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -s http://localhost:9200 | grep -q 'You Know, for Search'",
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 120
+
+  kibana:
+    image: kibana:${STACK_VERSION}
+    container_name: kibana
+    hostname: kibana-ui
+    restart: always
+    volumes:
+      - ./certs:/usr/share/kibana/config/certs
+      - ./kibana_data:/usr/share/kibana/data
+      - ./kibana.yml:/usr/share/kibana/config/kibana.yml
+    environment:
+      - SERVERNAME=kibana-ui
+      - ELASTICSEARCH_HOSTS=https://elastic01:9200
+      - ELASTICSEARCH_USERNAME=kibana_system
+      - ELASTICSEARCH_PASSWORD=${KIBANA_PASSWORD}
+      - ELASTICSEARCH_SSL_CERTIFICATEAUTHORITIES=config/certs/ca/ca.crt
+    networks:
+      network:
+        ipv4_address: 172.18.0.4
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -s -I http://localhost:5601 | grep -q 'HTTP/1.1 302 Found'",
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 120
+    depends_on:
+      elastic01:
+        condition: service_healthy
+  
+  hive:
+    image: strangebee/thehive:latest
+    container_name: thehive
+    hostname: hive
+    restart: always
+    environment:
+      - JVM_OPTS="-Xms1024M -Xmx1024M"
+    volumes:
+      - ./thehive_data:/data
+    command:
+      - --secret
+      - ${HIVE_SECRET}
+      - "--cql-hostnames"
+      - "cassandra"
+      - "--cql-cluster"
+      - "thp"
+      - "--cortex-hostnames"
+      - "cortex"
+      - "--cortex-port"
+      - "9001"
+      #- "--cortex-keys"
+      # put cortex api key once cortex is bootstraped
+      #- "<cortex_api_key>"
+    networks:
+      network:
+        ipv4_address: 172.18.0.6
+    depends_on:
+      - cassandra
+      - cortex
+
+  cassandra:
+    image: cassandra:4
+    container_name: cassandra
+    hostname: cassandra
+    restart: always
+    ports:
+      - 9042:9042
+    environment:
+      - CASSANDRA_CLUSTER_NAME=thp
+    volumes:
+      - ./cassandra_data:/var/lib/cassandra
+    networks:
+      network:
+        ipv4_address: 172.18.0.7
+
+  cortex:
+    image: thehiveproject/cortex:latest
+    container_name: cortex
+    hostname: cortex
+    privileged: true
+    restart: always
+    environment:
+      - job_directory=/tmp/cortex-jobs
+    volumes:
+      - ./cortex/application.conf:/etc/cortex/application.conf
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /tmp/cortex-jobs:/tmp/cortex-jobs
+    depends_on:
+      elastic02:
+        condition: service_healthy
+    networks:
+      network:
+        ipv4_address: 172.18.0.8
+
+  misp:
+    image: misp:latest
+    build:
+      context: .
+      target: misp
+    container_name: misp
+    hostname: misp
+    restart: always
+    volumes:
+      #- ./misp/config:/var/www/MISP/app/Config
+      - ./misp/logs:/var/www/MISP/app/tmp/logs
+      - ./misp/files:/var/www/MISP/app/files
+      - /dev/urandom:/dev/random
+    environment:
+      - INIT=true
+      - CRON_USER_ID=1
+      #- HOSTNAME=https://localhost
+      #- REDIS_FQDN=misp-redis
+      - MYSQL_HOST=${MYSQL_HOST}
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      - MISP_ADMIN_EMAIL=${MISP_ADMIN_EMAIL}
+      - MISP_ADMIN_PASSPHRASE=${MISP_ADMIN_PASSPHRASE}
+      - MISP_BASEURL=${MISP_BASEURL}
+      - POSTFIX_RELAY_HOST=${POSTFIX_RELAY_HOST}
+      - TIMEZONE=${TIMEZONE}
+    entrypoint: "wait-for-it.sh -t 0 -h ${MYSQL_HOST} -p 3306 -- /run.sh"
+    depends_on:
+      misp-db:
+        condition: service_healthy
+    networks:
+      network:
+        ipv4_address: 172.18.0.14
+
+  misp-db:
+    image: mysql:8.0.19
+    container_name: misp-db
+    hostname: misp-db
+    restart: always
+    command: --default-authentication-plugin=mysql_native_password
+    volumes:
+      - ./misp/db:/var/lib/mysql
+    environment:
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+    cap_add:
+      - SYS_NICE
+    healthcheck:
+      test: 
+        [
+          "CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u $MYSQL_USER --password=$MYSQL_PASSWORD"
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 120
+    networks:
+      network:
+        ipv4_address: 172.18.0.16
+
+  shuffle-frontend:
+    image: ghcr.io/shuffle/shuffle-frontend:latest
+    container_name: shuffle-frontend
+    hostname: shuffle-frontend
+    restart: always
+    environment:
+      - BACKEND_HOSTNAME=shuffle-backend
+    depends_on:
+      shuffle-backend:
+        condition: service_healthy
+    networks:
+      network:
+        ipv4_address: 172.18.0.9
+
+  shuffle-backend:
+    image: ghcr.io/shuffle/shuffle-backend:latest
+    container_name: shuffle-backend
+    hostname: shuffle-backend
+    restart: always
+    ports:
+      - 5001:5001
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./shuffle/apps:/shuffle-apps:z
+      - ./shuffle/files:/shuffle-files:z
+    environment:
+      - SHUFFLE_OPENSEARCH_URL=https://shuffle-opensearch:9200
+      - SHUFFLE_OPENSEARCH_USERNAME=${OPENSEARCH_USERNAME}
+      - SHUFFLE_OPENSEARCH_PASSWORD=${OPENSEARCH_PASSWORD}
+      - SHUFFLE_OPENSEARCH_SKIPSSL_VERIFY=true
+      - SHUFFLE_APP_HOTLOAD_FOLDER=/shuffle-apps
+      - SHUFFLE_FILE_LOCATION=/shuffle-files
+      - ORG_ID=Shuffle
+      - ENVIRONMENT_NAME=Shuffle
+      - SHUFFLE_APP_FORCE_UPDATE=false
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "nc -vvz shuffle-backend 5001 2> >(grep -q open)",
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 120
+    depends_on:
+      shuffle-opensearch:
+        condition: service_healthy
+    networks:
+      network:
+        ipv4_address: 172.18.0.10
+      
+  shuffle-orborus:
+    image: ghcr.io/shuffle/shuffle-orborus:latest
+    container_name: shuffle-orborus
+    hostname: shuffle-orborus
+    restart: always
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - SHUFFLE_WORKER_VERSION=latest
+      - ENVIRONMENT_NAME=Shuffle
+      - ORG_ID=Shuffle
+      - BASE_URL=http://shuffle-backend:5001
+      - DOCKER_API_VERSION=1.40
+      - SHUFFLE_BASE_IMAGE_NAME=shuffle
+      - SHUFFLE_BASE_IMAGE_REGISTRY=ghcr.io
+      - SHUFFLE_BASE_IMAGE_TAG_SUFFIX="-1.0.0"
+    security_opt:
+      - seccomp:unconfined
+    depends_on:
+      shuffle-backend:
+        condition: service_healthy
+    networks:
+      network:
+        ipv4_address: 172.18.0.11
+
+  shuffle-opensearch:
+    image: opensearchproject/opensearch:2.5.0
+    hostname: shuffle-opensearch
+    container_name: shuffle-opensearch
+    restart: always
+    environment:
+      - bootstrap.memory_lock=true
+      - cluster.initial_master_nodes=shuffle-opensearch
+      - cluster.routing.allocation.disk.threshold_enabled=false
+      - cluster.name=shuffle-cluster
+      - node.name=shuffle-opensearch
+      - node.store.allow_mmap=false
+      - discovery.seed_hosts=shuffle-opensearch
+      - "OPENSEARCH_JAVA_OPTS=-Xms2048m -Xmx2048m"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - ./shuffle/data:/usr/share/opensearch/data:z
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -ks https://localhost:9200 | grep -q Unauthorized",
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 120
+    networks:
+      network:
+        ipv4_address: 172.18.0.12
+
+  kuma:
+    image: louislam/uptime-kuma:latest
+    container_name: kuma
+    hostname: kuma
+    restart: always
+    volumes:
+      - ./kuma_data:/app/data
+    networks:
+      network:
+        ipv4_address: 172.18.0.13
+
+volumes:
+  elastic01:
+  cassandra_data:
+
+networks:
+  network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.18.0.0/16
+          gateway: 172.18.0.1

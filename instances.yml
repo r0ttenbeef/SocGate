@@ -1,0 +1,7 @@
+instances:
+  - name: elastic01
+    dns:
+      - elastic01
+      - localhost
+    ip:
+      - 172.18.0.2

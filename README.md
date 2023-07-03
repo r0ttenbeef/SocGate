@@ -3,9 +3,20 @@ Opensource SIEM and SOAR solution based on Elastic Security solution integrated 
 # Disclaimer
 This project doesn't meant for producation environments, Just use it for testing purposes or personal practices just like a POC environment.
 # Project Components and Structure
-Each component is deployed in a docker container and the diagram below should be explaining how the workflow is done.
+Each component is deployed in a docker container and the diagram below should be explaining how the workflow looks like.
  
 ![SocGate](https://github.com/r0ttenbeef/SocGate/assets/48027449/1761ccbe-d4ca-4a06-91a5-102740adebb7)
+
+| Component Name | Description |
+|------|------|
+| Elastic Search | NoSQL Database for logs storing and searching |
+| Kibana | Quering data from elasticsearch and visualizing |
+| Elastic Security | Elastic integration will act as an IPS/IDS |
+| Shuffle | SOAR System for connecting components and automation |
+| TheHive | Case management system for incident response |
+| Cortex | Have analyzers and observables |
+| MISP | Threat intelligence feed |
+| Nginx | Web server used as reverse proxy to each component |
 
 # Machine Requirements
 You don't need to install any packages before starting installation, Just a fresh installed ubuntu server.
